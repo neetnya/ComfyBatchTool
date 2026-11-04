@@ -89,6 +89,8 @@ public partial class MainWindow : Window
                     {
                         var clone = JsonNode.Parse(root.ToJsonString())!.AsObject();
                         SetPositive(clone, prompt);
+                        RandomizeSeed(clone); // 随机替换种子
+                        
                         var id = await _api.QueuePromptAsync(clone);
                         done++;
                         Log($"[{Path.GetFileName(path)}] {done}/{total} " +
@@ -111,6 +113,7 @@ public partial class MainWindow : Window
         }
     }
 
+    /// 将队列中的提示词拼接到原有的正向提示词后面（保留模板原本的质量词）
     private void SetPositive(JsonObject root, string prompt)
     {
         foreach (var kv in root)
@@ -119,10 +122,41 @@ public partial class MainWindow : Window
             var title = node["_meta"]?["title"]?.GetValue<string>() ?? "";
             if (!title.Contains("Positive", StringComparison.OrdinalIgnoreCase)) continue;
             if (node["inputs"] is not JsonObject inputs ||
-                inputs["text"] is not JsonNode) continue;
+                inputs["text"] is not JsonNode textNode) continue;
 
-            inputs["text"] = prompt;
+            // 拿到模板里原本的提示词（比如你 json 里的 "best"）
+            var originalText = textNode.GetValue<string>().Trim().TrimEnd(',', '，').TrimEnd();
+            
+            // 把队列里的提示词拼在后面
+            string finalText;
+            if (string.IsNullOrWhiteSpace(originalText))
+                finalText = prompt;
+            else
+                finalText = $"{originalText}, {prompt}";
+
+            inputs["text"] = finalText;
             return;
+        }
+    }
+
+    /// 自动给每个 KSampler 的种子换成随机数
+    private void RandomizeSeed(JsonObject root)
+    {
+        var random = new Random();
+        foreach (var kv in root)
+        {
+            if (kv.Value is not JsonObject node) continue;
+            var classType = node["class_type"]?.GetValue<string>() ?? "";
+            
+            // 兼容 KSampler 和 KSamplerAdvanced
+            if (classType == "KSampler" || classType == "KSamplerAdvanced")
+            {
+                if (node["inputs"] is JsonObject inputs && inputs.ContainsKey("seed"))
+                {
+                    long newSeed = (long)(random.NextDouble() * long.MaxValue);
+                    inputs["seed"] = newSeed;
+                }
+            }
         }
     }
 
