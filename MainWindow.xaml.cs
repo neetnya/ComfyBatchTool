@@ -1,9 +1,11 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.IO;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Media;
+using System.Windows.Threading;
 using ComfyBatchTool.Models;
 using ComfyBatchTool.Services;
 
@@ -13,13 +15,25 @@ public partial class MainWindow : Window
 {
     private readonly ComfyApiService _api = new();
     private readonly ObservableCollection<WorkflowItem> _workflows = new();
+    private readonly DispatcherTimer _saveTimer;
     private static Encoding? _gbEncoding;
+    private bool _suppressSave;
 
     public MainWindow()
     {
         InitializeComponent();
         LstWorkflows.ItemsSource = _workflows;
+
+        // 勾选变化后延迟写盘，避免「全选 / 全不选」时连续写几十次文件
+        _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+        _saveTimer.Tick += (_, _) =>
+        {
+            _saveTimer.Stop();
+            SaveSelection();
+        };
+
         Loaded += MainWindow_Loaded;
+        Closed += (_, _) => SaveSelection();
     }
 
     // 软件启动时自动读取一次 api 文件夹
@@ -45,20 +59,57 @@ public partial class MainWindow : Window
             return;
         }
 
-        foreach (var path in files)
+        var selection = AppSettingsStore.Load();
+
+        _suppressSave = true;
+        try
         {
-            try
+            foreach (var path in files)
             {
-                var root = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
-                _workflows.Add(new WorkflowItem(path, root));
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(this, $"{Path.GetFileName(path)}\n{ex.Message}",
-                    "工作流加载失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+                try
+                {
+                    var root = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+                    var item = new WorkflowItem(path, root);
+
+                    // 保存过设置时用上次的勾选状态；之前没出现过的新文件默认勾选
+                    if (selection.HasSavedFile && selection.Known.Contains(item.FileName))
+                        item.IsEnabled = selection.Enabled.Contains(item.FileName);
+
+                    item.PropertyChanged += Workflow_PropertyChanged;
+                    _workflows.Add(item);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, $"{Path.GetFileName(path)}\n{ex.Message}",
+                        "工作流加载失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
             }
         }
-        SetStatus($"已加载 {_workflows.Count} 个 JSON，默认全部勾选");
+        finally
+        {
+            _suppressSave = false;
+        }
+
+        SetStatus(selection.HasSavedFile
+            ? $"已加载 {_workflows.Count} 个 JSON（已恢复上次勾选）"
+            : $"已加载 {_workflows.Count} 个 JSON，默认全部勾选");
+    }
+
+    private void Workflow_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(WorkflowItem.IsEnabled) || _suppressSave) return;
+        _saveTimer.Stop();
+        _saveTimer.Start();
+    }
+
+    private void SaveSelection()
+    {
+        _saveTimer.Stop();
+        // api 目录为空时不要把已保存的勾选状态清掉
+        if (_workflows.Count == 0) return;
+        AppSettingsStore.Save(
+            _workflows.Where(w => w.IsEnabled).Select(w => w.FileName),
+            _workflows.Select(w => w.FileName));
     }
 
     private void BtnSelectAll_Click(object sender, RoutedEventArgs e) => SetAllWorkflowsEnabled(true);
@@ -206,10 +257,9 @@ public partial class MainWindow : Window
         var classType = node["class_type"]?.GetValue<string>() ?? "";
         return classType switch
         {
-            // 兼容 KSampler / KSamplerAdvanced
-            "KSampler" or "KSamplerAdvanced" => "seed",
-            // 新版采样流程（SamplerCustom 系列）的噪声节点
-            "RandomNoise" => "noise_seed",
+            "KSampler" => "seed",
+            // KSamplerAdvanced 的输入字段是 noise_seed（不是 seed）
+            "KSamplerAdvanced" or "RandomNoise" => "noise_seed",
             _ => null
         };
     }

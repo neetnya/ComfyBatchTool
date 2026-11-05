@@ -5,5 +5,10 @@
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup>
+    <None Remove="app.ico" />
+    <Resource Include="app.ico" />
+  </ItemGroup>
 </Project>
