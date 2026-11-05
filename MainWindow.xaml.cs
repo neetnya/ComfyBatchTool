@@ -1,8 +1,10 @@
+using System.Collections.ObjectModel;
 using System.IO;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Media;
+using ComfyBatchTool.Models;
 using ComfyBatchTool.Services;
 
 namespace ComfyBatchTool;
@@ -10,17 +12,20 @@ namespace ComfyBatchTool;
 public partial class MainWindow : Window
 {
     private readonly ComfyApiService _api = new();
-    private readonly List<(string Path, JsonObject Root)> _workflows = new();
+    private readonly ObservableCollection<WorkflowItem> _workflows = new();
     private static Encoding? _gbEncoding;
 
     public MainWindow()
     {
         InitializeComponent();
+        LstWorkflows.ItemsSource = _workflows;
         Loaded += MainWindow_Loaded;
     }
 
     // 软件启动时自动读取一次 api 文件夹
-    private void MainWindow_Loaded(object sender, RoutedEventArgs e)
+    private void MainWindow_Loaded(object sender, RoutedEventArgs e) => ReloadWorkflows();
+
+    private void ReloadWorkflows()
     {
         _workflows.Clear();
         string targetDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "api");
@@ -31,7 +36,9 @@ public partial class MainWindow : Window
             return;
         }
 
-        var files = Directory.GetFiles(targetDir, "*.json");
+        var files = Directory.GetFiles(targetDir, "*.json")
+            .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
         if (files.Length == 0)
         {
             SetError($"api 目录中无 JSON 文件: {targetDir}");
@@ -43,7 +50,7 @@ public partial class MainWindow : Window
             try
             {
                 var root = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
-                _workflows.Add((path, root));
+                _workflows.Add(new WorkflowItem(path, root));
             }
             catch (Exception ex)
             {
@@ -51,7 +58,16 @@ public partial class MainWindow : Window
                     "工作流加载失败", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
-        SetStatus($"已加载 {_workflows.Count} 个 JSON");
+        SetStatus($"已加载 {_workflows.Count} 个 JSON，默认全部勾选");
+    }
+
+    private void BtnSelectAll_Click(object sender, RoutedEventArgs e) => SetAllWorkflowsEnabled(true);
+
+    private void BtnSelectNone_Click(object sender, RoutedEventArgs e) => SetAllWorkflowsEnabled(false);
+
+    private void SetAllWorkflowsEnabled(bool enabled)
+    {
+        foreach (var wf in _workflows) wf.IsEnabled = enabled;
     }
 
     private async void BtnRun_Click(object sender, RoutedEventArgs e)
@@ -59,6 +75,13 @@ public partial class MainWindow : Window
         if (_workflows.Count == 0)
         {
             SetError("没有可用的工作流 JSON，请检查 api 目录后重启软件。");
+            return;
+        }
+
+        var selected = _workflows.Where(w => w.IsEnabled).ToList();
+        if (selected.Count == 0)
+        {
+            SetError("请至少勾选一个工作流。");
             return;
         }
 
@@ -76,6 +99,8 @@ public partial class MainWindow : Window
             return;
         }
 
+        bool lockSeed = ChkLockSeed.IsChecked == true;
+
         _api.BaseUrl = TxtBaseUrl.Text.Trim();
         BtnRun.IsEnabled = false;
         TxtLog.Text = string.Empty;
@@ -83,18 +108,23 @@ public partial class MainWindow : Window
 
         try
         {
-            int total = promptLines.Count * perPromptCount * _workflows.Count;
             int done = 0;
 
             foreach (var prompt in promptLines)
             {
                 for (int i = 0; i < perPromptCount; i++)
                 {
-                    foreach (var (_, root) in _workflows)
+                    // 锁定种子：同一组提示词（同一副本）只随机一次，所有勾选的工作流共用这个 seed。
+                    // 未锁定时保持原逻辑：每个工作流各自随机。
+                    long sharedSeed = NextSeed();
+
+                    foreach (var wf in selected)
                     {
-                        var clone = JsonNode.Parse(root.ToJsonString())!.AsObject();
+                        var clone = JsonNode.Parse(wf.Root.ToJsonString())!.AsObject();
                         SetPositive(clone, prompt);
-                        RandomizeSeed(clone); // 随机替换种子
+
+                        if (lockSeed) ApplySeed(clone, sharedSeed);
+                        else RandomizeSeed(clone);
 
                         await _api.QueuePromptAsync(clone);
                         done++;
@@ -142,26 +172,49 @@ public partial class MainWindow : Window
         }
     }
 
-    /// 自动给每个 KSampler 的种子换成随机数
-    private void RandomizeSeed(JsonObject root)
+    /// 自动给每个 KSampler 的种子换成随机数（每个节点各自随机）
+    private static void RandomizeSeed(JsonObject root)
     {
-        var random = new Random();
         foreach (var kv in root)
         {
             if (kv.Value is not JsonObject node) continue;
-            var classType = node["class_type"]?.GetValue<string>() ?? "";
+            var field = SeedFieldName(node);
+            if (field is null) continue;
 
-            // 兼容 KSampler 和 KSamplerAdvanced
-            if (classType == "KSampler" || classType == "KSamplerAdvanced")
-            {
-                if (node["inputs"] is JsonObject inputs && inputs.ContainsKey("seed"))
-                {
-                    long newSeed = (long)(random.NextDouble() * long.MaxValue);
-                    inputs["seed"] = newSeed;
-                }
-            }
+            if (node["inputs"] is JsonObject inputs && inputs.ContainsKey(field))
+                inputs[field] = NextSeed();
         }
     }
+
+    /// 把工作流里所有种子节点替换成同一个固定 seed
+    private static void ApplySeed(JsonObject root, long seed)
+    {
+        foreach (var kv in root)
+        {
+            if (kv.Value is not JsonObject node) continue;
+            var field = SeedFieldName(node);
+            if (field is null) continue;
+
+            if (node["inputs"] is JsonObject inputs && inputs.ContainsKey(field))
+                inputs[field] = seed;
+        }
+    }
+
+    /// 返回节点里种子字段的名字，非采样节点返回 null
+    private static string? SeedFieldName(JsonObject node)
+    {
+        var classType = node["class_type"]?.GetValue<string>() ?? "";
+        return classType switch
+        {
+            // 兼容 KSampler / KSamplerAdvanced
+            "KSampler" or "KSamplerAdvanced" => "seed",
+            // 新版采样流程（SamplerCustom 系列）的噪声节点
+            "RandomNoise" => "noise_seed",
+            _ => null
+        };
+    }
+
+    private static long NextSeed() => Random.Shared.NextInt64(0, long.MaxValue);
 
     // ---------------- 拖入 txt 文件 ----------------
 
