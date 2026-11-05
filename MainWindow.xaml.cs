@@ -1,6 +1,8 @@
 using System.IO;
+using System.Text;
 using System.Text.Json.Nodes;
 using System.Windows;
+using System.Windows.Media;
 using ComfyBatchTool.Services;
 
 namespace ComfyBatchTool;
@@ -9,7 +11,7 @@ public partial class MainWindow : Window
 {
     private readonly ComfyApiService _api = new();
     private readonly List<(string Path, JsonObject Root)> _workflows = new();
-    private CancellationTokenSource? _cts;
+    private static Encoding? _gbEncoding;
 
     public MainWindow()
     {
@@ -25,16 +27,14 @@ public partial class MainWindow : Window
 
         if (!Directory.Exists(targetDir))
         {
-            TxtStatus.Text = "未找到 api 目录";
-            Log($"目录不存在: {targetDir} (请创建并放入 JSON 文件)");
+            SetError($"未找到 api 目录: {targetDir}");
             return;
         }
 
         var files = Directory.GetFiles(targetDir, "*.json");
         if (files.Length == 0)
         {
-            TxtStatus.Text = "api 目录为空";
-            Log($"目录中无 JSON 文件: {targetDir}");
+            SetError($"api 目录中无 JSON 文件: {targetDir}");
             return;
         }
 
@@ -47,33 +47,39 @@ public partial class MainWindow : Window
             }
             catch (Exception ex)
             {
-                Log($"加载失败 {Path.GetFileName(path)}: {ex.Message}");
+                MessageBox.Show(this, $"{Path.GetFileName(path)}\n{ex.Message}",
+                    "工作流加载失败", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
-        TxtStatus.Text = $"已加载 {_workflows.Count} 个 JSON";
+        SetStatus($"已加载 {_workflows.Count} 个 JSON");
     }
 
     private async void BtnRun_Click(object sender, RoutedEventArgs e)
     {
-        if (_workflows.Count == 0) { Log("没有可用的工作流 JSON，请检查 api 目录后重启软件。"); return; }
-        
-        if (!int.TryParse(TxtCount.Text.Trim(), out int perPromptCount) || perPromptCount < 1)
-        { 
-            Log("每组生成数量必须为大于 0 的整数，请检查。"); 
-            return; 
+        if (_workflows.Count == 0)
+        {
+            SetError("没有可用的工作流 JSON，请检查 api 目录后重启软件。");
+            return;
         }
 
-        var promptLines = TxtPromptQueue.Text
-            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-            .Select(s => s.Trim())
-            .Where(s => s.Length > 0)
-            .ToList();
+        if (!int.TryParse(TxtCount.Text.Trim(), out int perPromptCount) || perPromptCount < 1)
+        {
+            SetError("每组生成数量必须为大于 0 的整数，请检查。");
+            return;
+        }
 
-        if (promptLines.Count == 0) { Log("正向提示词队列为空，请填写内容。"); return; }
+        var promptLines = ParsePromptLines(TxtPromptQueue.Text).ToList();
+
+        if (promptLines.Count == 0)
+        {
+            SetError("正向提示词队列为空，请填写内容或拖入 txt 文件。");
+            return;
+        }
 
         _api.BaseUrl = TxtBaseUrl.Text.Trim();
-        _cts = new CancellationTokenSource();
-        TxtStatus.Text = "正在生成...";
+        BtnRun.IsEnabled = false;
+        TxtLog.Text = string.Empty;
+        SetStatus("正在生成...");
 
         try
         {
@@ -84,32 +90,29 @@ public partial class MainWindow : Window
             {
                 for (int i = 0; i < perPromptCount; i++)
                 {
-                    _cts.Token.ThrowIfCancellationRequested();
-                    foreach (var (path, root) in _workflows)
+                    foreach (var (_, root) in _workflows)
                     {
                         var clone = JsonNode.Parse(root.ToJsonString())!.AsObject();
                         SetPositive(clone, prompt);
                         RandomizeSeed(clone); // 随机替换种子
-                        
-                        var id = await _api.QueuePromptAsync(clone);
+
+                        await _api.QueuePromptAsync(clone);
                         done++;
-                        Log($"[{Path.GetFileName(path)}] {done}/{total} " +
-                            $"提示词: {Truncate(prompt, 40)} → prompt_id={id}");
                     }
                 }
             }
-            Log($"全部任务已提交，共 {done} 个。");
-            TxtStatus.Text = "排队完成";
+            ShowSubmitted(done);
+            SetStatus("排队完成");
         }
-        catch (OperationCanceledException) 
-        { 
-            Log("已停止。"); 
-            TxtStatus.Text = "已停止";
+        catch (Exception ex)
+        {
+            SetError($"出错: {ex.Message}");
+            MessageBox.Show(this, ex.Message, "提交任务出错",
+                MessageBoxButton.OK, MessageBoxImage.Error);
         }
-        catch (Exception ex) 
-        { 
-            Log($"出错: {ex.Message}"); 
-            TxtStatus.Text = "发生错误";
+        finally
+        {
+            BtnRun.IsEnabled = true;
         }
     }
 
@@ -126,7 +129,7 @@ public partial class MainWindow : Window
 
             // 拿到模板里原本的提示词（比如你 json 里的 "best"）
             var originalText = textNode.GetValue<string>().Trim().TrimEnd(',', '，').TrimEnd();
-            
+
             // 把队列里的提示词拼在后面
             string finalText;
             if (string.IsNullOrWhiteSpace(originalText))
@@ -147,7 +150,7 @@ public partial class MainWindow : Window
         {
             if (kv.Value is not JsonObject node) continue;
             var classType = node["class_type"]?.GetValue<string>() ?? "";
-            
+
             // 兼容 KSampler 和 KSamplerAdvanced
             if (classType == "KSampler" || classType == "KSamplerAdvanced")
             {
@@ -160,14 +163,128 @@ public partial class MainWindow : Window
         }
     }
 
-    private void BtnStop_Click(object sender, RoutedEventArgs e) => _cts?.Cancel();
+    // ---------------- 拖入 txt 文件 ----------------
 
-    private static string Truncate(string s, int max)
-        => s.Length <= max ? s : s[..max] + "...";
-
-    private void Log(string msg)
+    private void Prompt_PreviewDragOver(object sender, DragEventArgs e)
     {
-        TxtLog.AppendText($"{DateTime.Now:HH:mm:ss} {msg}\n");
-        TxtLog.ScrollToEnd();
+        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop)
+            ? DragDropEffects.Copy
+            : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void Prompt_PreviewDrop(object sender, DragEventArgs e)
+    {
+        e.Handled = true;
+        if (e.Data.GetData(DataFormats.FileDrop) is not string[] paths) return;
+
+        var txtFiles = paths
+            .Where(p => File.Exists(p) &&
+                        string.Equals(Path.GetExtension(p), ".txt", StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (txtFiles.Count == 0)
+        {
+            SetError("请拖入 .txt 文本文件。");
+            return;
+        }
+
+        var groups = new List<string>();
+        var failed = new List<string>();
+
+        foreach (var file in txtFiles)
+        {
+            try
+            {
+                groups.AddRange(ParsePromptLines(ReadTextAuto(file)));
+            }
+            catch (Exception ex)
+            {
+                failed.Add($"{Path.GetFileName(file)}: {ex.Message}");
+            }
+        }
+
+        if (groups.Count > 0)
+        {
+            var existing = TxtPromptQueue.Text.TrimEnd();
+            var addition = string.Join(Environment.NewLine, groups);
+            TxtPromptQueue.Text = existing.Length == 0
+                ? addition
+                : existing + Environment.NewLine + addition;
+            TxtPromptQueue.CaretIndex = TxtPromptQueue.Text.Length;
+            TxtPromptQueue.ScrollToEnd();
+        }
+
+        if (failed.Count == 0)
+        {
+            SetStatus($"已读取 {txtFiles.Count} 个 txt，共 {groups.Count} 组提示词");
+        }
+        else
+        {
+            SetError($"读取失败 {failed.Count} 个文件");
+            MessageBox.Show(this, string.Join("\n", failed), "部分文件读取失败",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// txt 内容按行拆分，每个非空行当作一组提示词
+    private static IEnumerable<string> ParsePromptLines(string text)
+        => text.Replace("\r\n", "\n").Replace('\r', '\n')
+               .Split('\n')
+               .Select(l => l.Trim())
+               .Where(l => l.Length > 0);
+
+    /// 读取文本文件，自动识别 UTF-8 / UTF-16(BOM) / GB18030(ANSI 中文)
+    private static string ReadTextAuto(string filePath)
+    {
+        byte[] bytes = File.ReadAllBytes(filePath);
+        if (bytes.Length == 0) return string.Empty;
+
+        if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+            return Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3);
+        if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
+            return Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2);
+        if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
+            return Encoding.BigEndianUnicode.GetString(bytes, 2, bytes.Length - 2);
+
+        try
+        {
+            return new UTF8Encoding(false, true).GetString(bytes);
+        }
+        catch (DecoderFallbackException)
+        {
+            return Gb18030.GetString(bytes);
+        }
+    }
+
+    private static Encoding Gb18030
+    {
+        get
+        {
+            if (_gbEncoding != null) return _gbEncoding;
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+            _gbEncoding = Encoding.GetEncoding(54936); // GB18030
+            return _gbEncoding;
+        }
+    }
+
+    // ---------------- 状态与日志 ----------------
+
+    private void SetStatus(string msg)
+    {
+        TxtStatus.Text = msg;
+        TxtStatus.Foreground = Brushes.Gray;
+    }
+
+    private void SetError(string msg)
+    {
+        TxtStatus.Text = msg;
+        TxtStatus.Foreground = Brushes.Firebrick;
+    }
+
+    private void ShowSubmitted(int done)
+    {
+        TxtLog.Text = $"全部任务已提交，共 {done} 个。";
     }
 }
