@@ -23,42 +23,55 @@
         <!-- 主体：左侧工作流列表 + 右侧提示词队列 -->
         <Grid Grid.Row="1" Margin="0,0,0,12">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="300"/>
-                <ColumnDefinition Width="12"/>
+                <ColumnDefinition Width="248"/>
+                <ColumnDefinition Width="10"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
             <!-- 工作流勾选区：只提交勾选的 JSON -->
-            <GroupBox Grid.Column="0" Header="工作流列表（勾选的才提交）" Padding="6,4">
+            <GroupBox Grid.Column="0" Header="工作流列表" Padding="6,4">
                 <DockPanel>
                     <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
                         <Button x:Name="BtnSelectAll" Content="全选" Click="BtnSelectAll_Click"
                                 Padding="10,2" Margin="0,0,6,0"/>
                         <Button x:Name="BtnSelectNone" Content="全不选" Click="BtnSelectNone_Click"
+                                Padding="10,2" Margin="0,0,6,0"/>
+                        <Button x:Name="BtnReloadWorkflows" Content="刷新" Click="BtnReloadWorkflows_Click"
                                 Padding="10,2"/>
                     </StackPanel>
                     <TextBlock DockPanel.Dock="Bottom" Foreground="Gray" FontSize="11"
                                Margin="0,6,0,0" TextWrapping="Wrap"
-                               Text="来源：程序目录下的 api 文件夹"/>
-                    <ListBox x:Name="LstWorkflows" BorderThickness="0" Background="Transparent"
-                             HorizontalContentAlignment="Stretch"
-                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                        <ListBox.ItemContainerStyle>
-                            <Style TargetType="ListBoxItem">
-                                <Setter Property="Padding" Value="2,3"/>
-                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                            </Style>
-                        </ListBox.ItemContainerStyle>
-                        <ListBox.ItemTemplate>
-                            <DataTemplate>
-                                <CheckBox IsChecked="{Binding IsEnabled, Mode=TwoWay}"
-                                          ToolTip="{Binding Path}"
-                                          VerticalContentAlignment="Center">
-                                    <TextBlock Text="{Binding FileName}" TextTrimming="CharacterEllipsis"/>
-                                </CheckBox>
-                            </DataTemplate>
-                        </ListBox.ItemTemplate>
-                    </ListBox>
+                               Text="拖入 .json 可添加"/>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  AllowDrop="True"
+                                  PreviewDragOver="WorkflowList_DragOver"
+                                  PreviewDrop="WorkflowList_Drop">
+                        <ItemsControl x:Name="LstWorkflows">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <CheckBox IsChecked="{Binding IsEnabled, Mode=TwoWay}"
+                                              ToolTip="{Binding Path}"
+                                              Padding="4,5" Margin="0,0,0,1" MinHeight="26"
+                                              VerticalContentAlignment="Center">
+                                        <CheckBox.Style>
+                                            <Style TargetType="CheckBox">
+                                                <Setter Property="Background" Value="Transparent"/>
+                                                <Setter Property="HorizontalAlignment" Value="Stretch"/>
+                                                <Setter Property="Cursor" Value="Hand"/>
+                                                <Style.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter Property="Background" Value="#EAF1FA"/>
+                                                    </Trigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </CheckBox.Style>
+                                        <TextBlock Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis"/>
+                                    </CheckBox>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
                 </DockPanel>
             </GroupBox>
 
@@ -70,7 +83,7 @@
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <TextBlock Grid.Row="0" Text="正向提示词队列（每行一组，按顺序提交；可直接拖入一个或多个 .txt 文件）"
+                <TextBlock Grid.Row="0" Text="正向提示词队列"
                            Foreground="#555" Margin="0,0,0,6"/>
 
                 <TextBox x:Name="TxtPromptQueue" Grid.Row="1"
@@ -94,7 +107,7 @@
                              VerticalContentAlignment="Center" Text="1"/>
 
                     <CheckBox x:Name="ChkLockSeed" Grid.Column="2" VerticalAlignment="Center"
-                              Content="🔒 锁定 seed（同组提示词在多个工作流中保持一致）"
+                              Content="🔒 锁定 seed"
                               ToolTip="勾选后：同一条提示词提交到所有工作流时使用同一个 seed，方便对比不同工作流；不同提示词之间仍然各自随机。"/>
 
                     <Button x:Name="BtnRun" Grid.Column="3" Content="开始批量排队" Click="BtnRun_Click"

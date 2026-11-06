@@ -39,23 +39,27 @@ public partial class MainWindow : Window
     // 软件启动时自动读取一次 api 文件夹
     private void MainWindow_Loaded(object sender, RoutedEventArgs e) => ReloadWorkflows();
 
+    /// <summary>工作流 JSON 所在目录：程序目录下的 api 文件夹。</summary>
+    private static string WorkflowDirectory =>
+        Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "api");
+
     private void ReloadWorkflows()
     {
         _workflows.Clear();
-        string targetDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "api");
+        string targetDir = WorkflowDirectory;
 
         if (!Directory.Exists(targetDir))
         {
-            SetError($"未找到 api 目录: {targetDir}");
+            SetStatus($"未找到 api 目录，可把 .json 拖进左侧列表创建: {targetDir}");
             return;
         }
 
         var files = Directory.GetFiles(targetDir, "*.json")
-            .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(p => Path.GetFileNameWithoutExtension(p), FileNameComparer.Instance)
             .ToArray();
         if (files.Length == 0)
         {
-            SetError($"api 目录中无 JSON 文件: {targetDir}");
+            SetStatus($"api 目录中暂无 JSON，可拖入 .json 文件添加: {targetDir}");
             return;
         }
 
@@ -91,7 +95,7 @@ public partial class MainWindow : Window
         }
 
         SetStatus(selection.HasSavedFile
-            ? $"已加载 {_workflows.Count} 个 JSON（已恢复上次勾选）"
+            ? $"已加载 {_workflows.Count} 个 JSON，已恢复上次勾选"
             : $"已加载 {_workflows.Count} 个 JSON，默认全部勾选");
     }
 
@@ -119,6 +123,122 @@ public partial class MainWindow : Window
     private void SetAllWorkflowsEnabled(bool enabled)
     {
         foreach (var wf in _workflows) wf.IsEnabled = enabled;
+    }
+
+    private void BtnReloadWorkflows_Click(object sender, RoutedEventArgs e) => ReloadWorkflows();
+
+    // ---------------- 工作流管理：拖入 ----------------
+
+    private void WorkflowList_DragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = GetDroppedJsonFiles(e.Data).Count > 0
+            ? DragDropEffects.Copy
+            : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private static List<string> GetDroppedJsonFiles(IDataObject data)
+    {
+        if (!data.GetDataPresent(DataFormats.FileDrop)) return new List<string>();
+        if (data.GetData(DataFormats.FileDrop) is not string[] paths) return new List<string>();
+
+        return paths
+            .Where(p => File.Exists(p) &&
+                        string.Equals(Path.GetExtension(p), ".json", StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>把拖入的 .json 复制到 api 目录（先校验能否解析，避免放进坏文件）。</summary>
+    private void WorkflowList_Drop(object sender, DragEventArgs e)
+    {
+        e.Handled = true;
+
+        var jsonFiles = GetDroppedJsonFiles(e.Data);
+        if (jsonFiles.Count == 0)
+        {
+            SetError("请拖入 .json 工作流文件。");
+            return;
+        }
+
+        string dir = WorkflowDirectory;
+        try
+        {
+            Directory.CreateDirectory(dir);
+        }
+        catch (Exception ex)
+        {
+            SetError($"无法创建 api 目录: {ex.Message}");
+            return;
+        }
+
+        var added = new List<string>();
+        var failed = new List<string>();
+        int skipped = 0;
+
+        foreach (var file in jsonFiles)
+        {
+            var target = Path.Combine(dir, Path.GetFileName(file));
+
+            if (string.Equals(Path.GetFullPath(file), Path.GetFullPath(target),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                skipped++;
+                continue;
+            }
+
+            try
+            {
+                // 能解析成 JSON 对象才收，防止拖进非 ComfyUI 的 json 把列表搞乱
+                JsonNode.Parse(File.ReadAllText(file))!.AsObject();
+            }
+            catch (Exception ex)
+            {
+                failed.Add($"{Path.GetFileName(file)}: 不是有效的 JSON - {ex.Message}");
+                continue;
+            }
+
+            try
+            {
+                if (File.Exists(target))
+                {
+                    var answer = MessageBox.Show(this,
+                        $"{Path.GetFileName(target)} 已存在，是否覆盖？",
+                        "同名工作流", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                    if (answer != MessageBoxResult.Yes)
+                    {
+                        skipped++;
+                        continue;
+                    }
+                }
+
+                File.Copy(file, target, true);
+                added.Add(Path.GetFileName(target));
+            }
+            catch (Exception ex)
+            {
+                failed.Add($"{Path.GetFileName(file)}: {ex.Message}");
+            }
+        }
+
+        if (added.Count > 0)
+        {
+            ReloadWorkflows();
+            // 刚加进来的默认勾选
+            foreach (var wf in _workflows.Where(w => added.Contains(w.FileName, StringComparer.OrdinalIgnoreCase)))
+                wf.IsEnabled = true;
+        }
+
+        if (failed.Count > 0)
+        {
+            SetError($"已添加 {added.Count} 个，失败 {failed.Count} 个");
+            MessageBox.Show(this, string.Join("\n", failed), "部分工作流添加失败",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var extra = skipped > 0 ? $"，跳过 {skipped} 个" : "";
+        SetStatus(added.Count > 0 ? $"已添加 {added.Count} 个工作流{extra}" : $"没有新增工作流{extra}");
     }
 
     private async void BtnRun_Click(object sender, RoutedEventArgs e)

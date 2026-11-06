@@ -23,6 +23,9 @@ public class WorkflowItem : INotifyPropertyChanged
 
     public string FileName => System.IO.Path.GetFileName(Path);
 
+    /// <summary>界面上显示的名字，不带 .json 后缀。</summary>
+    public string DisplayName => System.IO.Path.GetFileNameWithoutExtension(Path);
+
     public bool IsEnabled
     {
         get => _isEnabled;
