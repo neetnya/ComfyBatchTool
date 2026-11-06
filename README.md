@@ -5,6 +5,7 @@
 ## ✨ 特性
 
 - **极简工作流**：只负责替换 `Positive Prompt` 并提交队列，不干扰模型、负向提示词、种子等其他参数。
+- **占位符替换**：如果正向提示词的 `text` 里写了 `Positive Prompt` 占位词（例如 `Positive Prompt, masterpiece, best quality, ...`），队列里的提示词会**替换这段占位词**，前后保留模板自带的质量词；没有占位词时仍按旧逻辑追加在原文本后面。
 - **免导入设计**：程序自动读取运行目录下 `api` 文件夹内的所有 `.json` 工作流文件，支持同时加载多个工作流。
 - **队列化生成**：支持多行文本输入，每行作为一组独立的正向提示词，自动按顺序追加到 ComfyUI 队列。
 - **自动折行防呆**：文本框的视觉自动换行不会被视为新的一组提示词，只有手动回车才会触发分组。
@@ -30,5 +31,7 @@ dotnet run
 ### 3. 使用
 1. 将 ComfyUI 导出的 API 格式 JSON 放入运行目录下的 `api` 文件夹（可放多个）。
 2. 把工作流里的正向提示词节点标题改成包含 `Positive` 的名字，插件会自动覆盖该节点的 `text`。
+   - 如果 `text` 里带 `Positive Prompt` 占位词，就只替换占位那一段（例：`Positive Prompt, masterpiece, best quality` → `1girl, smile, masterpiece, best quality`）；
+   - 没有占位词时，队列提示词会追加到原有文本后面（例：`masterpiece, best quality` → `masterpiece, best quality, 1girl, smile`）。
 3. 在正向提示词队列里每行填写一组提示词，或直接拖入 `.txt` 文件；设置每组生成数量后点击「开始批量排队」。
 4. 提交完成后，运行日志区会显示「全部任务已提交，共 x 个。」。

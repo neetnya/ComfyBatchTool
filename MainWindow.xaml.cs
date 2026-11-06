@@ -321,8 +321,33 @@ public partial class MainWindow : Window
         }
     }
 
-    /// 将队列中的提示词拼接到原有的正向提示词后面（保留模板原本的质量词）
+    /// <summary>
+    /// 模板 text 里用来标记「队列提示词插在这里」的占位词。
+    /// 例："Positive Prompt, masterpiece, very aesthetic, ..." →
+    ///     "队列提示词, masterpiece, very aesthetic, ..."
+    /// </summary>
+    private const string PositivePlaceholder = "Positive Prompt";
+
+    /// 把队列里的提示词写进正向提示词节点。
+    /// 1. 文本里带占位符（如 "Positive Prompt"）时：只替换占位那一段，模板原有的质量词保留；
+    /// 2. 没有占位符时：保持旧行为，拼接到模板提示词后面。
     private void SetPositive(JsonObject root, string prompt)
+    {
+        if (TrySetPositiveNode(root, prompt)) return;
+
+        // 兜底：标题里没写 Positive，但文本里写了占位符的编码节点（工作流被改过名时不至于漏掉）
+        foreach (var kv in root)
+        {
+            if (kv.Value is not JsonObject node) continue;
+            if (node["inputs"] is not JsonObject inputs ||
+                inputs["text"] is not JsonNode textNode) continue;
+
+            if (TryReplacePlaceholder(textNode, prompt)) return;
+        }
+    }
+
+    /// <summary>在标题含 Positive 的节点里写入提示词，写入成功返回 true。</summary>
+    private static bool TrySetPositiveNode(JsonObject root, string prompt)
     {
         foreach (var kv in root)
         {
@@ -332,19 +357,67 @@ public partial class MainWindow : Window
             if (node["inputs"] is not JsonObject inputs ||
                 inputs["text"] is not JsonNode textNode) continue;
 
-            // 拿到模板里原本的提示词（比如你 json 里的 "best"）
-            var originalText = textNode.GetValue<string>().Trim().TrimEnd(',', '，').TrimEnd();
+            // 模板写了占位符：替换占位那一段
+            if (TryReplacePlaceholder(textNode, prompt)) return true;
 
-            // 把队列里的提示词拼在后面
-            string finalText;
-            if (string.IsNullOrWhiteSpace(originalText))
-                finalText = prompt;
-            else
-                finalText = $"{originalText}, {prompt}";
+            // 没有占位符：拿到模板里原本的提示词（比如你 json 里的 "best"），把队列提示词拼在后面
+            string originalText;
+            try
+            {
+                originalText = textNode.GetValue<string>();
+            }
+            catch (Exception)
+            {
+                return false; // text 不是字符串（比如被连成了节点）就不碰
+            }
 
-            inputs["text"] = finalText;
-            return;
+            originalText = originalText.Trim().TrimEnd(',', '，').TrimEnd();
+            inputs["text"] = string.IsNullOrWhiteSpace(originalText)
+                ? prompt
+                : $"{originalText}, {prompt}";
+            return true;
         }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 把文本里的占位符替换成队列提示词；没有占位符返回 false。
+    /// 占位符出现多次时每处都替换。
+    /// </summary>
+    private static bool TryReplacePlaceholder(JsonNode textNode, string prompt)
+    {
+        string text;
+        try
+        {
+            text = textNode.GetValue<string>();
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+
+        int index = text.IndexOf(PositivePlaceholder, StringComparison.OrdinalIgnoreCase);
+        if (index < 0) return false;
+
+        var builder = new StringBuilder(text.Length + prompt.Length);
+        int start = 0;
+        while (index >= 0)
+        {
+            builder.Append(text, start, index - start);
+            builder.Append(prompt);
+            start = index + PositivePlaceholder.Length;
+            index = text.IndexOf(PositivePlaceholder, start, StringComparison.OrdinalIgnoreCase);
+        }
+        builder.Append(text, start, text.Length - start);
+
+        // 占位符在开头/结尾时会多出逗号，收一下
+        string finalText = builder.ToString().Trim();
+        finalText = finalText.TrimStart(',', '，').Trim();
+        finalText = finalText.TrimEnd(',', '，').Trim();
+
+        textNode.ReplaceWith(finalText);
+        return true;
     }
 
     /// 给保存节点的 filename_prefix 末尾追加日期（yyMMdd），方便按天归档。
