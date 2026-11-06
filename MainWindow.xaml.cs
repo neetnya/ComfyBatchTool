@@ -272,6 +272,9 @@ public partial class MainWindow : Window
 
         bool lockSeed = ChkLockSeed.IsChecked == true;
 
+        // 一批任务共用一个日期后缀，避免跨零点时同一批图片被分到两个日期
+        string dateSuffix = DateTime.Now.ToString("yyMMdd");
+
         _api.BaseUrl = TxtBaseUrl.Text.Trim();
         BtnRun.IsEnabled = false;
         TxtLog.Text = string.Empty;
@@ -293,6 +296,7 @@ public partial class MainWindow : Window
                     {
                         var clone = JsonNode.Parse(wf.Root.ToJsonString())!.AsObject();
                         SetPositive(clone, prompt);
+                        AppendDateToFilenamePrefix(clone, dateSuffix);
 
                         if (lockSeed) ApplySeed(clone, sharedSeed);
                         else RandomizeSeed(clone);
@@ -340,6 +344,35 @@ public partial class MainWindow : Window
 
             inputs["text"] = finalText;
             return;
+        }
+    }
+
+    /// 给保存节点的 filename_prefix 末尾追加日期（yyMMdd），方便按天归档。
+    /// 例：模板里的 "boleromix/" 会变成 "boleromix/251106"，输出 boleromix/251106_00001_.png。
+    private static void AppendDateToFilenamePrefix(JsonObject root, string dateSuffix)
+    {
+        foreach (var kv in root)
+        {
+            if (kv.Value is not JsonObject node) continue;
+            if (node["inputs"] is not JsonObject inputs) continue;
+
+            // 只动带 filename_prefix 的节点（SaveImage 等），其它节点原样保留
+            if (inputs["filename_prefix"] is not JsonNode prefixNode) continue;
+
+            string prefix;
+            try
+            {
+                prefix = prefixNode.GetValue<string>();
+            }
+            catch (Exception)
+            {
+                continue; // 意外类型（比如被改成节点连线）就不碰
+            }
+
+            // 模板自己已经写了当天日期时不重复追加
+            if (prefix.EndsWith(dateSuffix, StringComparison.Ordinal)) continue;
+
+            inputs["filename_prefix"] = prefix + dateSuffix;
         }
     }
 
