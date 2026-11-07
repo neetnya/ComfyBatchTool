@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -125,7 +126,35 @@ public partial class MainWindow : Window
         foreach (var wf in _workflows) wf.IsEnabled = enabled;
     }
 
+    /// <summary>全局锁定时「锁定 seed」失去意义，置灰避免误解（XAML 初始化时会先于控件创建触发）。</summary>
+    private void ChkGlobalLockSeed_Changed(object sender, RoutedEventArgs e)
+    {
+        if (ChkLockSeed is null || ChkGlobalLockSeed is null) return;
+        ChkLockSeed.IsEnabled = ChkGlobalLockSeed.IsChecked != true;
+    }
+
     private void BtnReloadWorkflows_Click(object sender, RoutedEventArgs e) => ReloadWorkflows();
+
+    /// <summary>在资源管理器中打开 api 工作流目录，目录不存在时先创建。</summary>
+    private void BtnOpenWorkflowFolder_Click(object sender, RoutedEventArgs e)
+    {
+        string dir = WorkflowDirectory;
+        try
+        {
+            Directory.CreateDirectory(dir);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"\"{dir}\"",
+                UseShellExecute = true
+            });
+            SetStatus($"已打开工作流目录: {dir}");
+        }
+        catch (Exception ex)
+        {
+            SetError($"无法打开工作流目录: {ex.Message}");
+        }
+    }
 
     // ---------------- 工作流管理：拖入 ----------------
 
@@ -271,6 +300,10 @@ public partial class MainWindow : Window
         }
 
         bool lockSeed = ChkLockSeed.IsChecked == true;
+        bool globalLockSeed = ChkGlobalLockSeed.IsChecked == true;
+
+        // 全局锁定：整批任务共用一个 seed，只在点击「开始批量排队」时随机这一次
+        long? batchSeed = globalLockSeed ? NextSeed() : null;
 
         // 一批任务共用一个日期后缀，避免跨零点时同一批图片被分到两个日期
         string dateSuffix = DateTime.Now.ToString("yyMMdd");
@@ -288,9 +321,9 @@ public partial class MainWindow : Window
             {
                 for (int i = 0; i < perPromptCount; i++)
                 {
-                    // 锁定种子：同一组提示词（同一副本）只随机一次，所有勾选的工作流共用这个 seed。
-                    // 未锁定时保持原逻辑：每个工作流各自随机。
-                    long sharedSeed = NextSeed();
+                    // 全局锁定时整批共用一个 seed；否则勾选「锁定 seed」时同一组提示词（同一副本）
+                    // 的所有工作流共用一个 seed，未勾选时每个工作流各自随机。
+                    long sharedSeed = batchSeed ?? NextSeed();
 
                     foreach (var wf in selected)
                     {
@@ -298,7 +331,7 @@ public partial class MainWindow : Window
                         SetPositive(clone, prompt);
                         AppendDateToFilenamePrefix(clone, dateSuffix);
 
-                        if (lockSeed) ApplySeed(clone, sharedSeed);
+                        if (lockSeed || batchSeed.HasValue) ApplySeed(clone, sharedSeed);
                         else RandomizeSeed(clone);
 
                         await _api.QueuePromptAsync(clone);
@@ -306,7 +339,7 @@ public partial class MainWindow : Window
                     }
                 }
             }
-            ShowSubmitted(done);
+            ShowSubmitted(done, batchSeed);
             SetStatus("排队完成");
         }
         catch (Exception ex)
@@ -612,8 +645,10 @@ public partial class MainWindow : Window
         TxtStatus.Foreground = Brushes.Firebrick;
     }
 
-    private void ShowSubmitted(int done)
+    private void ShowSubmitted(int done, long? batchSeed)
     {
-        TxtLog.Text = $"全部任务已提交，共 {done} 个。";
+        TxtLog.Text = batchSeed is long seed
+            ? $"全部任务已提交，共 {done} 个。本批全局 seed: {seed}"
+            : $"全部任务已提交，共 {done} 个。";
     }
 }

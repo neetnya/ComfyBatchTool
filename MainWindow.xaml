@@ -39,9 +39,18 @@
                         <Button x:Name="BtnReloadWorkflows" Content="刷新" Click="BtnReloadWorkflows_Click"
                                 Padding="10,2"/>
                     </StackPanel>
-                    <TextBlock DockPanel.Dock="Bottom" Foreground="Gray" FontSize="11"
-                               Margin="0,6,0,0" TextWrapping="Wrap"
-                               Text="拖入 .json 可添加"/>
+                    <Grid DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Foreground="Gray" FontSize="11"
+                                   VerticalAlignment="Center" TextWrapping="Wrap"
+                                   Text="拖入 .json 可添加"/>
+                        <Button x:Name="BtnOpenWorkflowFolder" Grid.Column="1" Content="打开目录"
+                                Click="BtnOpenWorkflowFolder_Click" Padding="8,2" FontSize="11"
+                                Margin="6,0,0,0" ToolTip="在资源管理器中打开 api 工作流目录"/>
+                    </Grid>
                     <ScrollViewer VerticalScrollBarVisibility="Auto"
                                   HorizontalScrollBarVisibility="Disabled"
                                   AllowDrop="True"
@@ -99,6 +108,7 @@
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
 
@@ -110,7 +120,12 @@
                               Content="🔒 锁定 seed"
                               ToolTip="勾选后：同一条提示词提交到所有工作流时使用同一个 seed，方便对比不同工作流；不同提示词之间仍然各自随机。"/>
 
-                    <Button x:Name="BtnRun" Grid.Column="3" Content="开始批量排队" Click="BtnRun_Click"
+                    <CheckBox x:Name="ChkGlobalLockSeed" Grid.Column="3" Margin="16,0,0,0" VerticalAlignment="Center"
+                              Content="🌐 全局锁定 seed"
+                              Checked="ChkGlobalLockSeed_Changed" Unchecked="ChkGlobalLockSeed_Changed"
+                              ToolTip="勾选后：点击「开始批量排队」时才生成一个 seed，本批次内所有提示词、所有工作流共用这一个 seed。与「锁定 seed」同时勾选时以本项为准；每组生成数量大于 1 时会得到相同的图。"/>
+
+                    <Button x:Name="BtnRun" Grid.Column="4" Content="开始批量排队" Click="BtnRun_Click"
                             HorizontalAlignment="Right" Padding="24,8"
                             Background="#2D7D46" Foreground="White" FontWeight="Bold"/>
                 </Grid>
